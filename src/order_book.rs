@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap,VecDeque };
 use std::cmp::{min, Ordering};
 use crate::comparable_price::ComparablePrice;
-use crate::types::{Price, Quantity, OrderConditions};
+use crate::types::{Price, Quantity, OrderConditions , PRICE_UNCHANGED , MARKET_ORDER_PRICE};
 use crate::order::Order;
 
 //use crate::order_tracker::OrderTracker;
@@ -191,5 +191,26 @@ impl<O: Order + Clone> OrderBook<O> {
         matched
     }
 
-    
+    pub fn set_market_price(&mut self, price: Price) {
+        let old_market_price = self.market_price;
+        self.market_price = price;
+        
+        if price > old_market_price || old_market_price == MARKET_ORDER_PRICE {
+            // price has gone up: check stop bids
+            let buy_side = true;
+            self.check_stop_orders(buy_side, price, &mut self.stop_bids);
+        } else if price < old_market_price || old_market_price == MARKET_ORDER_PRICE {
+            // price has gone down: check stop asks
+            let buy_side = false;
+            self.check_stop_orders(buy_side, price, &mut self.stop_asks);
+        }
+    }
+
+    /// Get current market price 
+    /// /// The market price is normally the price at which the last trade happened.
+    pub fn market_price(&self) -> Price {
+        self.market_price
+    }
+
+        
 }    
