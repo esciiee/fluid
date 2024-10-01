@@ -1,23 +1,26 @@
 use std::collections::{BTreeMap,VecDeque };
 use std::cmp::{min, Ordering};
+use std::rc::Rc;
 use crate::comparable_price::ComparablePrice;
 use crate::types::{Price, OrderConditions , PRICE_UNCHANGED , MARKET_ORDER_PRICE};
 use crate::order::Order;
 use crate::callback::Callback;
 use crate::order_tracker::OrderTracker;
 use crate::order_listener::OrderListener;
+use crate::trade_listener::TradeListener;
+use crate::order_book_listener::OrderBookListener;
 
 //use crate::order_tracker::OrderTracker;
 //use crate::listener::{OrderListener, TradeListener, OrderBookListener};
 
-pub struct OrderBook<O: Order> {
+pub struct OrderBook<O: Order + Clone> {
     symbol: String,
     bids: BTreeMap<ComparablePrice, OrderTracker<O>>,
     asks: BTreeMap<ComparablePrice, OrderTracker<O>>,
     stop_bids: BTreeMap<ComparablePrice, OrderTracker<O>>,
     stop_asks: BTreeMap<ComparablePrice, OrderTracker<O>>,
     pending_orders: Vec<OrderTracker<O>>,
-    callbacks: VecDeque<Box<dyn FnOnce(&mut OrderBook<O>)>>,
+    callbacks: VecDeque<Callback<O>>,
     order_listener: Option<Box<dyn OrderListener<O>>>,
     trade_listener: Option<Box<dyn TradeListener<O>>>,
     order_book_listener: Option<Box<dyn OrderBookListener<O>>>,
@@ -62,31 +65,44 @@ impl<O: Order + Clone> OrderBook<O> {
     }
 
     /// Adds an order to the order book
-    pub fn add(&mut self, order: &O, conditions: OrderConditions) -> bool {
+    pub fn add(&mut self, order: Rc<O>, conditions: OrderConditions) -> bool {
+        let mut matched = false;
+
         if order.order_qty() == 0 {
-            self.callbacks.push_back(Callback::reject(order.clone(), "size must be positive"));
-            return false;
+            self.callbacks.push_back(Callback::reject(order, "size must be positive"));
+        } else {
+            let mut inbound = OrderTracker::new(order.clone(), conditions);
+            
+            if inbound.ptr().stop_price() != 0 && self.add_stop_order(&mut inbound) {
+                // The order has been added to stops
+                self.callbacks.push_back(Callback::accept_stop(order));
+            } else {
+                let accept_cb_index = self.callbacks.len();
+                self.callbacks.push_back(Callback::accept(order.clone()));
+                matched = self.submit_order(&mut inbound);
+                // Note the filled qty in the accept callback
+                if let Some(callback) = self.callbacks.get_mut(accept_cb_index) {
+                    callback.quantity = inbound.filled_qty();
+                }
+
+                // Cancel any unfilled IOC order
+                if inbound.immediate_or_cancel() && !inbound.filled() {
+                    // NOTE - this may need the actual open qty
+                    self.callbacks.push_back(Callback::cancel(order.clone(), 0));
+                }
+            }
+
+            // If adding this order triggered any stops
+            // handle those stops now
+            while !self.pending_orders.is_empty() {
+                self.submit_pending_orders();
+            }
+
+            self.callbacks.push_back(Callback::book_update(Some(self)));
         }
 
-        let mut tracker = OrderTracker::new(order.clone(), conditions);
-        let matched = if tracker.ptr().stop_price() != 0 && self.add_stop_order(&mut tracker) {
-            self.callbacks.push_back(Callback::accept_stop(tracker.ptr()));
-            false
-        } else {
-            let accept_cb_index = self.callbacks.len();
-            self.callbacks.push_back(Callback::accept(tracker.ptr()));
-            let matched = self.submit_order(&mut tracker);
-            // Note the filled qty in the accept callback
-            if let Some(cb) = self.callbacks.get_mut(accept_cb_index) {
-                cb.set_quantity(tracker.filled_qty());
-            }
-
-            // Cancel any unfilled IOC order
-            if tracker.immediate_or_cancel() && !tracker.filled() {
-                self.callbacks.push_back(Callback::cancel(tracker.ptr(), 0));
-            }
-            matched
-        };
+        self.callback_now();
+        matched
     }
     
     /// Cancel an order in the book
