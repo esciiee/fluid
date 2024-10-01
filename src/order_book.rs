@@ -129,5 +129,67 @@ impl<O: Order + Clone> OrderBook<O> {
         self.callback_now();
     }
 
+    pub fn replace(&mut self, order: &O, size_delta: i64, new_price: Price) -> bool {
+        let mut matched = false;
+        let price_change = new_price != 0 && new_price != order.price();
+
+        let price = if new_price == PRICE_UNCHANGED { order.price() } else { new_price };
+
+        let market = if order.is_buy() { &mut self.bids } else { &mut self.asks };
+        
+        if let Some(pos) = self.find_on_market(order) {
+            let tracker = pos.1;
+            let mut size_delta = size_delta;
+
+            // If there is not enough open quantity for the size reduction
+            if size_delta < 0 && (tracker.open_qty() as i64) < -size_delta {
+                // get rid of as much as we can
+                size_delta = -(tracker.open_qty() as i64);
+                if size_delta == 0 {
+                    // if there is nothing to get rid of
+                    // Reject the replace
+                    self.callbacks.push_back(Callback::replace_reject(order.clone(), 
+                        "order is already filled"));
+                    return false;
+                }
+            }
+
+            // Accept the replace
+            self.callbacks.push_back(
+                Callback::replace(order.clone(), tracker.open_qty(), size_delta, price));
+            
+            let new_open_qty = tracker.open_qty() as i64 + size_delta;
+            tracker.change_qty(size_delta);  // Update our copy
+            
+            // If the size change will close the order
+            if new_open_qty == 0 {
+                // Cancel with NO open qty (should be zero after replace)
+                self.callbacks.push_back(Callback::cancel(order.clone(), 0));
+                market.remove(&ComparablePrice::new(order.is_buy(), order.price()));
+            } else {
+                // Else rematch the new order - there could be a price change
+                // or size change - that could cause all or none match
+                let order_tracker = tracker.clone();
+                market.remove(&ComparablePrice::new(order.is_buy(), order.price()));
+                matched = self.add_order(&order_tracker, price);
+            }
+
+            // If replace any order this order triggered any trades
+            // which triggered any stops
+            // handle those stops now
+            while !self.pending_orders.is_empty() {
+                self.submit_pending_orders();
+            }
+
+            self.callbacks.push_back(Callback::book_update());
+        } else {
+            // not found
+            self.callbacks.push_back(Callback::replace_reject(order.clone(), "not found"));
+        }
+
+        self.callback_now();
+        matched
+    }
+
     
 }    
