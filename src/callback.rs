@@ -1,5 +1,7 @@
 use crate::types::{Price, Quantity};
 use std::rc::Rc;
+use crate::order_book::OrderBook;
+use crate::order::Order;
 
 #[derive(Debug, Clone)]
 pub enum CbType {
@@ -17,19 +19,28 @@ pub enum CbType {
     BookUpdate,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum FillFlags {
+    NeitherFilled = 0,
+    InboundFilled = 1,
+    MatchedFilled = 2,
+    BothFilled = 4,
+}
+
 #[derive(Debug, Clone)]
-pub struct Callback<T: Clone> {
+pub struct Callback<O: Order + Clone> {
     pub cb_type: CbType,
-    pub order: Option<Rc<T>>,
-    pub matched_order: Option<Rc<T>>,
+    pub order: Option<Rc<O>>,
+    pub matched_order: Option<Rc<O>>,
     pub quantity: Quantity,
     pub price: Price,
     pub flags: u8,
     pub delta: i64,
     pub reject_reason: Option<String>,
+    pub book: Option<*const OrderBook<O>>,
 }
 
-impl<T: Clone> Callback<T> {
+impl<O: Order + Clone> Callback<O> {
     pub fn new() -> Self {
         Callback {
             cb_type: CbType::Unknown,
@@ -40,10 +51,11 @@ impl<T: Clone> Callback<T> {
             flags: 0,
             delta: 0,
             reject_reason: None,
+            book: None,
         }
     }
 
-    pub fn accept(order: Rc<T>) -> Self {
+    pub fn accept(order: Rc<O>) -> Self {
         Callback {
             cb_type: CbType::OrderAccept,
             order: Some(order),
@@ -51,7 +63,7 @@ impl<T: Clone> Callback<T> {
         }
     }
 
-    pub fn accept_stop(order: Rc<T>) -> Self {
+    pub fn accept_stop(order: Rc<O>) -> Self {
         Callback {
             cb_type: CbType::OrderAcceptStop,
             order: Some(order),
@@ -59,7 +71,7 @@ impl<T: Clone> Callback<T> {
         }
     }
 
-    pub fn trigger_stop(order: Rc<T>) -> Self {
+    pub fn trigger_stop(order: Rc<O>) -> Self {
         Callback {
             cb_type: CbType::OrderTriggerStop,
             order: Some(order),
@@ -67,7 +79,7 @@ impl<T: Clone> Callback<T> {
         }
     }
 
-    pub fn reject(order: Rc<T>, reason: &str) -> Self {
+    pub fn reject(order: Rc<O>, reason: &str) -> Self {
         Callback {
             cb_type: CbType::OrderReject,
             order: Some(order),
@@ -77,11 +89,11 @@ impl<T: Clone> Callback<T> {
     }
 
     pub fn fill(
-        inbound_order: Rc<T>,
-        matched_order: Rc<T>,
+        inbound_order: Rc<O>,
+        matched_order: Rc<O>,
         fill_qty: Quantity,
         fill_price: Price,
-        fill_flags: u8,
+        fill_flags: FillFlags,
     ) -> Self {
         Callback {
             cb_type: CbType::OrderFill,
@@ -89,12 +101,12 @@ impl<T: Clone> Callback<T> {
             matched_order: Some(matched_order),
             quantity: fill_qty,
             price: fill_price,
-            flags: fill_flags,
+            flags: fill_flags as u8,
             ..Self::new()
         }
     }
 
-    pub fn cancel(order: Rc<T>, open_qty: Quantity) -> Self {
+    pub fn cancel(order: Rc<O>, open_qty: Quantity) -> Self {
         Callback {
             cb_type: CbType::OrderCancel,
             order: Some(order),
@@ -103,7 +115,7 @@ impl<T: Clone> Callback<T> {
         }
     }
 
-    pub fn cancel_stop(order: Rc<T>) -> Self {
+    pub fn cancel_stop(order: Rc<O>) -> Self {
         Callback {
             cb_type: CbType::OrderCancelStop,
             order: Some(order),
@@ -111,7 +123,7 @@ impl<T: Clone> Callback<T> {
         }
     }
 
-    pub fn cancel_reject(order: Rc<T>, reason: &str) -> Self {
+    pub fn cancel_reject(order: Rc<O>, reason: &str) -> Self {
         Callback {
             cb_type: CbType::OrderCancelReject,
             order: Some(order),
@@ -121,7 +133,7 @@ impl<T: Clone> Callback<T> {
     }
 
     pub fn replace(
-        order: Rc<T>,
+        order: Rc<O>,
         curr_open_qty: Quantity,
         size_delta: i64,
         new_price: Price,
@@ -136,7 +148,7 @@ impl<T: Clone> Callback<T> {
         }
     }
 
-    pub fn replace_reject(order: Rc<T>, reason: &str) -> Self {
+    pub fn replace_reject(order: Rc<O>, reason: &str) -> Self {
         Callback {
             cb_type: CbType::OrderReplaceReject,
             order: Some(order),
@@ -145,25 +157,15 @@ impl<T: Clone> Callback<T> {
         }
     }
 
-    pub fn book_update() -> Self {
+    pub fn book_update(book: Option<&OrderBook<O>>) -> Self {
         Callback {
             cb_type: CbType::BookUpdate,
+            book: book.map(|b| b as *const OrderBook<O>),
             ..Self::new()
         }
     }
-}
 
-// pub struct FillFlags;
-
-// impl FillFlags {
-//     pub const NEITHER_FILLED: u8 = 0;
-//     pub const INBOUND_FILLED: u8 = 1;
-//     pub const MATCHED_FILLED: u8 = 2;
-//     pub const BOTH_FILLED: u8 = 4;
-// }
-pub enum FillFlags {
-    NeitherFilled = 0,
-    InboundFilled = 1,
-    MatchedFilled = 2,
-    BothFilled = 4,
+    pub fn get_book(&self) -> Option<&OrderBook<O>> {
+        self.book.map(|ptr| unsafe { &*ptr })
+    }
 }

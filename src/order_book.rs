@@ -73,7 +73,7 @@ impl<O: Order + Clone> OrderBook<O> {
         } else {
             let mut inbound = OrderTracker::new(order.clone(), conditions);
             
-            if inbound.ptr().stop_price() != 0 && self.add_stop_order(&mut inbound) {
+            if inbound.ptr().stop_price() != 0 && self.add_stop_order(inbound) {
                 // The order has been added to stops
                 self.callbacks.push_back(Callback::accept_stop(order));
             } else {
@@ -105,6 +105,108 @@ impl<O: Order + Clone> OrderBook<O> {
         matched
     }
     
+    fn add_stop_order(&mut self, tracker: OrderTracker<O>) -> bool {
+        let is_buy = tracker.ptr().is_buy();
+        let key = ComparablePrice::new(is_buy, tracker.ptr().stop_price());
+        // if the market price is a better deal than the stop price, it's not time to trigger
+        let is_stopped = key < self.market_price;
+        
+        if is_stopped {
+            if is_buy {
+                self.stop_bids.insert(key, tracker);
+            } else {
+                self.stop_asks.insert(key, tracker);
+            }
+        }
+        
+        is_stopped
+    }
+
+    fn check_stop_orders(&mut self, side: bool, price: Price) {
+        let until = ComparablePrice::new(side, price);
+        let stops = if side { &mut self.stop_bids } else { &mut self.stop_asks };
+
+        let mut triggered_stops = Vec::new();
+        let mut keys_to_remove = Vec::new();
+
+        for (key, _) in stops.range(..until) {
+            if &until > key {
+                break;
+            }
+            keys_to_remove.push(*key);
+        }
+
+        for key in keys_to_remove {
+            if let Some(tracker) = stops.remove(&key) {
+                triggered_stops.push(tracker);
+            }
+        }
+
+        self.pending_orders.extend(triggered_stops);
+    }
+
+    fn submit_order(&mut self, inbound: &mut OrderTracker<O>) -> bool {
+        let order_price = inbound.ptr().price();
+        self.add_order(inbound, order_price)
+    }
+
+    // Note: You'll need to implement the add_order method as well
+    fn add_order(&mut self, inbound: &mut OrderTracker<O>, order_price: Price) -> bool {
+        // Implementation of add_order goes here
+        todo!("Implement add_order method")
+    }
+
+    fn submit_pending_orders(&mut self) {
+        // Take ownership of pending_orders, leaving an empty Vec in its place
+        let pending = std::mem::take(&mut self.pending_orders);
+
+        for mut tracker in pending {
+            self.submit_order(&mut tracker);
+            self.callbacks.push_back(Callback::trigger_stop(tracker.ptr().clone()));
+        }
+
+        // No need to swap back, as pending is dropped here and self.pending_orders is already empty
+    }
+
+    fn callback_now(&mut self) {
+        // Protect against recursive calls
+        if self.handling_callbacks {
+            return;
+        }
+
+        self.handling_callbacks = true;
+
+        // Process all accumulated callbacks
+        while !self.callbacks.is_empty() {
+            let mut working_callbacks = VecDeque::new();
+            std::mem::swap(&mut self.callbacks, &mut working_callbacks);
+
+            for callback in working_callbacks {
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.perform_callback(callback);
+                })) {
+                    Ok(_) => {},
+                    Err(e) => {
+                        if let Some(logger) = &self.logger {
+                            if let Some(error_message) = e.downcast_ref::<String>() {
+                                logger.log_exception(&format!("Caught exception during callback: {}", error_message));
+                            } else {
+                                logger.log_message("Caught unknown exception during callback");
+                            }
+                        } else {
+                            if let Some(error_message) = e.downcast_ref::<String>() {
+                                eprintln!("Caught exception during callback: {}", error_message);
+                            } else {
+                                eprintln!("Caught unknown exception during callback");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        self.handling_callbacks = false;
+    }
     /// Cancel an order in the book
     pub fn cancel(&mut self, order: &O) {
         let mut found = false;
