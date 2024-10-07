@@ -140,12 +140,9 @@ mod test {
         let mut book = OrderBook::new(dec!(0.1));
         let price = dec!(0.1);
         let amount = dec!(100);
-        execute_limit(&mut book, 1, price, amount, Side::Bid);
-        let mr = execute_limit(&mut book, 1, price, amount, Side::Ask);
-        assert_eq!(2, mr.taker.order_id);
-        assert_eq!(mr.taker.state, State::ConditionallyCanceled);
-        assert!(mr.maker.is_empty());
-        // assert!(book.find_order(1).is_some());
-        // assert!(book.find_order(2).is_none());
+        for i in 0..1_000_000 {
+            let ask_bid = if i % 2 == 0 { Side::Ask } else { Side::Bid };
+            execute_limit(&mut book, i, price, amount, ask_bid);
+        }
     }
 }

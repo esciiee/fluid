@@ -235,7 +235,6 @@ pub fn execute_limit(
 
 fn take(page: &mut Level, taker: &mut Order, limit: &mut u32) -> (Vec<Maker>, bool) {
     let mut matches = Vec::<Maker>::new();
-    println!("taker: {:?}, page: {:?}", taker, page);
     while !taker.is_filled() && !page.is_empty() {
         if *limit == 0u32 {
             return (matches, true);
