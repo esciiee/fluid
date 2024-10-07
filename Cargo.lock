@@ -2206,6 +2206,7 @@ dependencies = [
 name = "solbook"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "light-sdk",
  "linked-hash-map",
  "rust_decimal",
